@@ -21,7 +21,11 @@ import DropdownSelector from '../components/DropdownSelector';
 import InfoGrid from '../components/InfoGrid';
 import GiantButton from '../components/GiantButton';
 
-export const HomeScreen: React.FC = () => {
+export interface HomeScreenProps {
+  onStartHarvest?: () => void;
+}
+
+export const HomeScreen: React.FC<HomeScreenProps> = ({ onStartHarvest }) => {
   // Estado local simulado (listo para reemplazar por Supabase en el futuro)
   const [cuadrilla, setCuadrilla] = useState({
     nombre: 'Cuadrilla Alfa - Uva',
@@ -54,7 +58,11 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleIniciarCosecha = () => {
-    Alert.alert('Cosecha', 'Iniciando registro de bines y pesaje...');
+    if (onStartHarvest) {
+      onStartHarvest();
+    } else {
+      Alert.alert('Cosecha', 'Iniciando registro de bines y pesaje...');
+    }
   };
 
   return (
