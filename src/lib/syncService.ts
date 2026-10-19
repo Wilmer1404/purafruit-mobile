@@ -109,7 +109,7 @@ export const syncRegistrosPendientes = async (id_cuadrilla?: any, id_campana_lot
     return {
       id_jornada: idJornada,
       id_trabajador: p.id_trabajador,
-      uid_nfc_leido: p.uid_nfc_leido || 'NFC-SIM',
+      uid_nfc_leido: p.uid_nfc_leido || '04A1B2C3D4E5',
       cantidad: p.cantidad || 1,
       calidad: calidadMapeada,
       motivo_merma: motivo,
