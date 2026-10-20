@@ -52,6 +52,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onStartHarvest, onNaviga
 
   const handleLogout = async () => {
     const pendientes = await getLocalRegistrosPendientes();
+    const limpiarCacheYSalir = async () => {
+      await AsyncStorage.multiRemove([
+        STORAGE_KEYS.CUADRILLAS,
+        STORAGE_KEYS.TRABAJADORES,
+        STORAGE_KEYS.LOTES,
+        STORAGE_KEYS.JORNADA_ACTIVA,
+      ]);
+      await supabase.auth.signOut();
+    };
+
     if (pendientes.length > 0) {
       Alert.alert('⚠️ Datos Pendientes', 'Tienes jabas sin sincronizar a la nube.', [
         { text: 'Cancelar', style: 'cancel' },
@@ -60,15 +70,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onStartHarvest, onNaviga
             const qId = selectedCuadrilla?.id || selectedCuadrilla?.id_cuadrilla;
             const camp = Array.isArray(selectedLote?.campanas_lote) ? selectedLote?.campanas_lote[0] : selectedLote?.campanas_lote;
             await syncRegistrosPendientes(qId, camp?.id_campana_lote || camp?.id || selectedLote?.id_campana_lote || null);
-            await supabase.auth.signOut();
+            await limpiarCacheYSalir();
           } catch (err: any) { Alert.alert('Error', err?.message || 'No se pudo sincronizar.'); }
         }},
-        { text: 'Descartar y Salir', style: 'destructive', onPress: async () => { await AsyncStorage.removeItem(STORAGE_KEYS.PENDIENTES); await supabase.auth.signOut(); } },
+        { text: 'Descartar y Salir', style: 'destructive', onPress: async () => {
+          await AsyncStorage.removeItem(STORAGE_KEYS.PENDIENTES);
+          await limpiarCacheYSalir();
+        } },
       ]);
     } else {
       Alert.alert('Cerrar Sesión', '¿Deseas cerrar sesión en el terminal?', [
         { text: 'Cancelar', style: 'cancel' },
-        { text: 'Sí, Salir', style: 'destructive', onPress: () => supabase.auth.signOut() },
+        { text: 'Sí, Salir', style: 'destructive', onPress: () => limpiarCacheYSalir() },
       ]);
     }
   };
