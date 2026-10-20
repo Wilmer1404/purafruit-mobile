@@ -3,11 +3,19 @@ import { View, Text, ScrollView, TouchableOpacity, Modal, ActivityIndicator, Ale
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { ArrowLeft, Nfc } from 'lucide-react-native';
-import NfcManager, { NfcTech } from 'react-native-nfc-manager';
 import { supabase } from '../lib/supabase';
 import { getLocalTrabajadores, syncCatalogos, Trabajador } from '../lib/syncService';
 
-NfcManager.start();
+let NfcManager: any = null;
+let NfcTech: any = null;
+try {
+  const nfcModule = require('react-native-nfc-manager');
+  NfcManager = nfcModule.default || nfcModule;
+  NfcTech = nfcModule.NfcTech;
+  NfcManager.start();
+} catch (error) {
+  console.warn('NfcManager no disponible en este entorno (Expo Go). Usando modo simulación.');
+}
 
 export interface NfcAssignScreenProps {
   onBackToHome: () => void;
@@ -16,23 +24,21 @@ export interface NfcAssignScreenProps {
 export const NfcAssignScreen: React.FC<NfcAssignScreenProps> = ({ onBackToHome }) => {
   const [trabajadores, setTrabajadores] = useState<Trabajador[]>([]);
   const [selectedWorker, setSelectedWorker] = useState<Trabajador | null>(null);
-  const [saving, setSaving] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    getLocalTrabajadores()
-      .then(setTrabajadores)
-      .catch(() => Alert.alert('Error', 'No se pudieron cargar los trabajadores.'))
-      .finally(() => setLoading(false));
+    getLocalTrabajadores().then(setTrabajadores).catch(() => Alert.alert('Error', 'Error cargando personal.')).finally(() => setLoading(false));
   }, []);
 
   const handleRealPhysicalRead = async () => {
     if (!selectedWorker) return;
+    if (!NfcManager) return Alert.alert('Aviso NFC', 'El módulo NFC nativo no está disponible. Use la simulación.');
     setSaving(true);
     try {
       await NfcManager.requestTechnology(NfcTech.Ndef);
       const tag = await NfcManager.getTag();
-      if (tag && tag.id) {
+      if (tag?.id) {
         const workerId = selectedWorker.id_trabajador || selectedWorker.id;
         const { error } = await supabase.from('trabajadores').update({ uid_nfc: tag.id }).eq('id_trabajador', workerId);
         if (error) throw error;
@@ -41,10 +47,10 @@ export const NfcAssignScreen: React.FC<NfcAssignScreenProps> = ({ onBackToHome }
         setSelectedWorker(null);
         Alert.alert('Éxito', `Tarjeta NFC (${tag.id}) leída y asignada.`);
       }
-    } catch (ex: any) {
+    } catch {
       Alert.alert('Aviso NFC', 'No se pudo leer la tarjeta o el dispositivo no soporta NFC nativo. Use la simulación para pruebas en Expo Go.');
     } finally {
-      NfcManager.cancelTechnologyRequest();
+      NfcManager?.cancelTechnologyRequest?.();
       setSaving(false);
     }
   };
@@ -53,7 +59,6 @@ export const NfcAssignScreen: React.FC<NfcAssignScreenProps> = ({ onBackToHome }
     if (!selectedWorker) return;
     const workerId = selectedWorker.id_trabajador || selectedWorker.id;
     const newCode = Math.random().toString(16).substring(2, 10).toUpperCase();
-
     setSaving(true);
     try {
       const { error } = await supabase.from('trabajadores').update({ uid_nfc: newCode }).eq('id_trabajador', workerId);
@@ -96,9 +101,7 @@ export const NfcAssignScreen: React.FC<NfcAssignScreenProps> = ({ onBackToHome }
                   <Text className="text-slate-500 text-xs mt-0.5">DNI: {worker.dni || 'S/N'} • Nivel: {worker.nivel_actual || 'Estándar'}</Text>
                 </View>
                 <View className={`px-2.5 py-1 rounded-full ${assigned ? 'bg-emerald-100' : 'bg-rose-100'}`}>
-                  <Text className={`text-xs font-bold ${assigned ? 'text-emerald-700' : 'text-rose-700'}`}>
-                    {assigned ? `NFC: ${worker.uid_nfc}` : 'Sin Tarjeta Asignada'}
-                  </Text>
+                  <Text className={`text-xs font-bold ${assigned ? 'text-emerald-700' : 'text-rose-700'}`}>{assigned ? `NFC: ${worker.uid_nfc}` : 'Sin Tarjeta Asignada'}</Text>
                 </View>
               </TouchableOpacity>
             );
