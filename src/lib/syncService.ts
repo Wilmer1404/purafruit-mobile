@@ -19,29 +19,68 @@ const mapCalidad = (calidad: string): string => {
 };
 
 export const syncCatalogos = async () => {
-  const { data: { user } } = await supabase.auth.getUser();
-  const [lotesRes, cuadrillasRes, trabajadoresRes] = await Promise.all([
-    supabase.from('lotes').select('*, campanas_lote(*, cultivos(nombre, variedad))'),
-    supabase.from('cuadrillas').select('*'),
-    supabase.from('trabajadores').select('*').eq('activo', true),
-  ]);
+  // 1. Obtener sesión de forma segura
+  const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError || !session?.user) throw { message: 'No hay sesión activa', code: 'AUTH_ERROR' };
+  const userId = session.user.id;
 
-  if (lotesRes.error) throw { message: lotesRes.error.message, code: lotesRes.error.code, details: lotesRes.error.details };
-  if (cuadrillasRes.error) throw { message: cuadrillasRes.error.message, code: cuadrillasRes.error.code, details: cuadrillasRes.error.details };
-  if (trabajadoresRes.error) throw { message: trabajadoresRes.error.message, code: trabajadoresRes.error.code, details: trabajadoresRes.error.details };
+  // 2. Lotes Globales
+  const { data: lotesData, error: lotesErr } = await supabase
+    .from('lotes')
+    .select('*, campanas_lote(*, cultivos(nombre, variedad))');
+  if (lotesErr) throw lotesErr;
 
-  let cuadrillas = cuadrillasRes.data || [];
-  if (user?.id) {
-    const mias = cuadrillas.filter((c) => (c.capataz_id || c.id_capataz || c.user_id) === user.id);
-    if (mias.length > 0) cuadrillas = mias;
+  // 3. Cuadrillas ESTRICTAMENTE filtradas por el userId actual
+  let { data: cuadrillasData, error: cuadErr } = await supabase
+    .from('cuadrillas')
+    .select('*')
+    .eq('activa', true)
+    .or(`id_capataz_titular.eq.${userId},user_id.eq.${userId}`); // Fallback por si la columna se llama user_id en algunas vistas
+
+  // Fallback si la columna user_id no existe en la tabla física de Supabase (Error PostgreSQL 42703)
+  if (cuadErr && (cuadErr.code === '42703' || cuadErr.message?.includes('user_id'))) {
+    const fallback = await supabase
+      .from('cuadrillas')
+      .select('*')
+      .eq('activa', true)
+      .eq('id_capataz_titular', userId);
+    cuadrillasData = fallback.data;
+    cuadErr = fallback.error;
+  }
+  if (cuadErr) throw cuadErr;
+
+  const cuadrillas = cuadrillasData || [];
+  const cuadrillasIds = cuadrillas.map(c => c.id_cuadrilla || c.id);
+
+  // 4. Trabajadores ESTRICTAMENTE de las cuadrillas del usuario
+  let trabajadoresUnicos: Trabajador[] = [];
+  
+  if (cuadrillasIds.length > 0) {
+    const { data: miembrosData, error: miemErr } = await supabase
+      .from('cuadrilla_miembros')
+      .select('id_trabajador, trabajadores(*)')
+      .in('id_cuadrilla', cuadrillasIds)
+      .eq('activo', true);
+      
+    if (miemErr) throw miemErr;
+
+    const mapTrabajadores = new Map();
+    miembrosData?.forEach((m: any) => {
+      if (m.trabajadores && m.trabajadores.activo) {
+        mapTrabajadores.set(m.trabajadores.id_trabajador || m.trabajadores.id, m.trabajadores);
+      }
+    });
+    trabajadoresUnicos = Array.from(mapTrabajadores.values());
   }
 
+  // 5. Guardado Local
   await AsyncStorage.multiSet([
-    [STORAGE_KEYS.LOTES, JSON.stringify(lotesRes.data || [])],
+    [STORAGE_KEYS.LOTES, JSON.stringify(lotesData || [])],
     [STORAGE_KEYS.CUADRILLAS, JSON.stringify(cuadrillas)],
-    [STORAGE_KEYS.TRABAJADORES, JSON.stringify(trabajadoresRes.data || [])],
+    [STORAGE_KEYS.TRABAJADORES, JSON.stringify(trabajadoresUnicos)],
   ]);
-  return { lotes: lotesRes.data || [], cuadrillas, trabajadores: trabajadoresRes.data || [] };
+
+  return { lotes: lotesData || [], cuadrillas, trabajadores: trabajadoresUnicos };
 };
 
 export const getLocalLotes = async () => JSON.parse((await AsyncStorage.getItem(STORAGE_KEYS.LOTES)) || '[]');
@@ -68,6 +107,7 @@ export const syncRegistrosPendientes = async (id_cuadrilla?: any, id_campana_lot
   const userId = capataz_id || userRes.user?.id || null;
 
   // 1. Buscar si ya existe la jornada hoy para esta cuadrilla y lote
+  console.log('[SYNC] 1. Buscando jornada existente para hoy:', { hoy, id_cuadrilla, id_campana_lote });
   let { data: jornada, error: fetchError } = await supabase
     .from('jornadas')
     .select('id_jornada')
@@ -76,10 +116,14 @@ export const syncRegistrosPendientes = async (id_cuadrilla?: any, id_campana_lot
     .eq('id_campana_lote', id_campana_lote)
     .maybeSingle();
 
-  if (fetchError) throw { message: fetchError.message, details: fetchError.details, code: fetchError.code };
+  if (fetchError) {
+    console.error('[SYNC ERROR - Paso 1 Buscar Jornada]:', fetchError);
+    throw { message: fetchError.message, details: fetchError.details, code: fetchError.code };
+  }
 
   // 2. Si no existe, creamos la jornada nueva
   if (!jornada) {
+    console.log('[SYNC] 2. Creando nueva jornada para la fecha:', hoy);
     const { data: newJornada, error: insertError } = await supabase
       .from('jornadas')
       .insert([{
@@ -92,11 +136,15 @@ export const syncRegistrosPendientes = async (id_cuadrilla?: any, id_campana_lot
       .select('id_jornada')
       .single();
 
-    if (insertError) throw { message: insertError.message, details: insertError.details, code: insertError.code };
+    if (insertError) {
+      console.error('[SYNC ERROR - Paso 2 Crear Jornada]:', insertError);
+      throw { message: insertError.message, details: insertError.details, code: insertError.code };
+    }
     jornada = newJornada;
   }
 
   const idJornada = jornada?.id_jornada;
+  console.log('[SYNC] 3. Insertando', pendientes.length, 'registros de cosecha en jornada:', idJornada);
   const payload = pendientes.map((p) => {
     const calidadMapeada = mapCalidad(p.calidad);
     let motivo = null;
@@ -118,7 +166,10 @@ export const syncRegistrosPendientes = async (id_cuadrilla?: any, id_campana_lot
   });
 
   const { error: regError } = await supabase.from('registros_cosecha').insert(payload);
-  if (regError) throw { message: regError.message, details: regError.details, code: regError.code };
+  if (regError) {
+    console.error('[SYNC ERROR - Paso 3 Insertar Registros Cosecha]:', regError);
+    throw { message: regError.message, details: regError.details, code: regError.code };
+  }
 
   await AsyncStorage.removeItem(STORAGE_KEYS.PENDIENTES);
   return { syncedCount: payload.length, id_jornada: idJornada };
